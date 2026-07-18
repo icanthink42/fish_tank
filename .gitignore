@@ -1,0 +1,17 @@
+.pio/
+.pioenvs/
+.piolibdeps/
+compile_commands.json
+*.bin
+*.elf
+*.hex
+*.map
+.venv/
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

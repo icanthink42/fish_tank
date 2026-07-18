@@ -1,0 +1,12 @@
+{
+  "name": "ArduinoGFX_CO5300",
+  "version": "1.6.4-waveshare-minimal",
+  "description": "Minimal Arduino_GFX subset for Waveshare ESP32-S3-Touch-AMOLED-2.16 CO5300 QSPI display",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "build": {
+    "srcFilter": [
+      "+<*>"
+    ]
+  }
+}
