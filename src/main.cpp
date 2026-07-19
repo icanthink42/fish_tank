@@ -36,6 +36,8 @@ constexpr size_t kMaxBubbles = 24;
 constexpr uint32_t kTouchPollMs = 30;
 constexpr uint32_t kImuPollMs = 25;
 constexpr uint32_t kPowerButtonPollMs = 100;
+constexpr uint32_t kSideButtonPollMs = 20;
+constexpr uint32_t kFishFrenzyMs = 3000;
 constexpr uint32_t kShakeSpinMs = 900;
 constexpr float kShakeJerkThresholdG = 0.65f;
 constexpr float kBubbleMinGravityProjectionG = 0.12f;
@@ -51,6 +53,8 @@ constexpr uint8_t kAxp2101PowerKeyLongPressIrq = 1 << 2;
 constexpr uint8_t kAxp2101PowerKeyShortPressIrq = 1 << 3;
 constexpr uint8_t kAxp2101PowerKeyIrqMask =
     kAxp2101PowerKeyShortPressIrq | kAxp2101PowerKeyLongPressIrq;
+constexpr uint8_t kBootButtonPin = 0;
+constexpr uint8_t kUserButtonPin = 18;
 
 #define DECLARE_FISH_PNG(index)                                                \
   extern const uint8_t fish##index##PngStart[]                                 \
@@ -564,6 +568,33 @@ void triggerShakeSpin(uint32_t nowMs) {
   }
 }
 
+void triggerFishFrenzy(uint32_t nowMs) {
+  for (size_t i = 0; i < kMaxFish; ++i) {
+    if (fishActive[i]) {
+      fish[i].runFast(nowMs, kFishFrenzyMs);
+    }
+  }
+}
+
+void pollSideButtons(uint32_t nowMs) {
+  static uint32_t lastPollMs = 0;
+  static bool bootWasPressed = false;
+  static bool userWasPressed = false;
+  if (nowMs - lastPollMs < kSideButtonPollMs) {
+    return;
+  }
+  lastPollMs = nowMs;
+
+  const bool bootPressed = digitalRead(kBootButtonPin) == LOW;
+  const bool userPressed = digitalRead(kUserButtonPin) == LOW;
+  if ((bootPressed && !bootWasPressed) ||
+      (userPressed && !userWasPressed)) {
+    triggerFishFrenzy(nowMs);
+  }
+  bootWasPressed = bootPressed;
+  userWasPressed = userPressed;
+}
+
 void pollShake(uint32_t nowMs) {
   static bool havePreviousAccel = false;
   static float previousAccelX = 0.0f;
@@ -632,6 +663,8 @@ void setup() {
   delay(500);
 
   Wire.begin(kI2cSda, kI2cScl);
+  pinMode(kBootButtonPin, INPUT_PULLUP);
+  pinMode(kUserButtonPin, INPUT_PULLUP);
   randomSeed(esp_random());
 
   Serial.println();
@@ -695,6 +728,7 @@ void setup() {
 void loop() {
   const uint32_t nowMs = millis();
   pollPowerButton(nowMs);
+  pollSideButtons(nowMs);
 
   if (!fishLoaded) {
     return;

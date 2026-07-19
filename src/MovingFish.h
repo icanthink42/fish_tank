@@ -27,6 +27,7 @@ public:
              uint32_t nowMs);
   void beginOffscreen(const Image &image, float scale,
                       const FishMotionConfig &config, uint32_t nowMs);
+  void runFast(uint32_t nowMs, uint32_t durationMs);
   void spinInPlace(uint32_t nowMs, uint32_t durationMs);
   void swimTo(float targetX, float targetY, uint32_t nowMs);
   void update(uint32_t nowMs);
@@ -46,6 +47,7 @@ private:
     Paused,
     Seeking,
     Spinning,
+    Frenzy,
   };
 
   void updatePauseRoll(uint32_t nowMs);
@@ -75,4 +77,7 @@ private:
   uint32_t stateDurationMs_ = 0;
   uint32_t lastUpdateMs_ = 0;
   uint32_t lastPauseRollMs_ = 0;
+  float frenzyRadius_ = 0.0f;
+  float frenzyAngleRadians_ = 0.0f;
+  float frenzyDirection_ = 1.0f;
 };

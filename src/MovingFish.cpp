@@ -10,6 +10,8 @@ constexpr float kSeekTurnRadiansPerSecond = 3.0f;
 constexpr float kSeekArrivalRadius = 40.0f;
 constexpr float kMinSpinRadiansPerSecond = 7.0f;
 constexpr float kMaxSpinRadiansPerSecond = 12.0f;
+constexpr float kFrenzySpeedMultiplier = 6.0f;
+constexpr float kMinFrenzyRadiusForSpeed = 20.0f;
 
 float normalizeRadians(float angle) {
   while (angle > PI) {
@@ -98,6 +100,25 @@ void MovingFish::swimTo(float targetX, float targetY, uint32_t nowMs) {
   lastPauseRollMs_ = nowMs;
 }
 
+void MovingFish::runFast(uint32_t nowMs, uint32_t durationMs) {
+  if (!image_) {
+    return;
+  }
+
+  state_ = State::Frenzy;
+  stateStartMs_ = nowMs;
+  stateDurationMs_ = durationMs;
+  lastUpdateMs_ = nowMs;
+  lastPauseRollMs_ = nowMs;
+  const float centerX = config_.displayWidth * 0.5f;
+  const float centerY = config_.displayHeight * 0.5f;
+  const float offsetX = x_ - centerX;
+  const float offsetY = y_ - centerY;
+  frenzyRadius_ = sqrtf((offsetX * offsetX) + (offsetY * offsetY));
+  frenzyAngleRadians_ = atan2f(offsetY, offsetX);
+  frenzyDirection_ = random(2) == 0 ? -1.0f : 1.0f;
+}
+
 void MovingFish::spinInPlace(uint32_t nowMs, uint32_t durationMs) {
   if (!image_) {
     return;
@@ -151,6 +172,14 @@ void MovingFish::update(uint32_t nowMs) {
       randomizeHeading();
     }
     return;
+  }
+
+  if (state_ == State::Frenzy &&
+      nowMs - stateStartMs_ >= stateDurationMs_) {
+    state_ = State::Moving;
+    targetHeadingRadians_ = headingRadians_;
+    lastUpdateMs_ = nowMs;
+    lastPauseRollMs_ = nowMs;
   }
 
   updatePosition(nowMs);
@@ -233,6 +262,25 @@ void MovingFish::updatePosition(uint32_t nowMs) {
   const float elapsedSeconds = (nowMs - lastUpdateMs_) / 1000.0f;
   lastUpdateMs_ = nowMs;
 
+  if (state_ == State::Frenzy) {
+    const float orbitSpeed = config_.pixelsPerSecond * kFrenzySpeedMultiplier;
+    const float angularSpeed =
+        orbitSpeed / fmaxf(frenzyRadius_, kMinFrenzyRadiusForSpeed);
+    frenzyAngleRadians_ = normalizeRadians(
+        frenzyAngleRadians_ +
+        (frenzyDirection_ * angularSpeed * elapsedSeconds));
+
+    const float centerX = config_.displayWidth * 0.5f;
+    const float centerY = config_.displayHeight * 0.5f;
+    x_ = centerX + (cosf(frenzyAngleRadians_) * frenzyRadius_);
+    y_ = centerY + (sinf(frenzyAngleRadians_) * frenzyRadius_);
+    headingRadians_ =
+        frenzyAngleRadians_ + (frenzyDirection_ * PI * 0.5f);
+    targetHeadingRadians_ = headingRadians_;
+    rotationRadians_ = headingRadians_ + PI;
+    return;
+  }
+
   float speed = config_.pixelsPerSecond;
   float maxTurn = config_.maxTurnRadiansPerSecond;
   if (state_ == State::Seeking) {
@@ -273,6 +321,10 @@ bool MovingFish::hasEntered() const {
 }
 
 bool MovingFish::isFullyOffscreen() const {
+  if (state_ == State::Frenzy) {
+    return false;
+  }
+
   // Compare against the rotated bounding radius so the fish only counts as
   // gone once no pixel can be on screen in any orientation.
   const float radius = boundingRadius();
