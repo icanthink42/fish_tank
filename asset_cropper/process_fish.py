@@ -7,16 +7,61 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 
 
+def clear_outside_border(pixels: np.ndarray) -> np.ndarray:
+    rgb = pixels[:, :, :3].astype(np.float32) / 255.0
+    alpha = pixels[:, :, 3]
+    maximum = rgb.max(axis=2)
+    minimum = rgb.min(axis=2)
+    chroma = maximum - minimum
+    saturation = chroma / np.maximum(maximum, 1e-6)
+    visible = alpha > 12
+
+    ring = visible & ~ndimage.binary_erosion(visible, iterations=6)
+    if not ring.any():
+        ring = visible
+    sat_cutoff = max(0.25, float(np.quantile(saturation[ring], 0.9)) + 0.15)
+    dark_cutoff = float(np.clip(np.median(maximum[ring]) - 0.3, 0.25, 0.6))
+    weak_cutoff = max(0.09, float(np.quantile(chroma[ring], 0.9)) + 0.04)
+
+    strong = ((saturation > sat_cutoff) | (maximum < dark_cutoff)) & visible
+    weak = (chroma > weak_cutoff) & visible
+    border = ndimage.binary_propagation(strong, mask=strong | weak)
+
+    labels, count = ndimage.label(border)
+    if count:
+        sizes = np.bincount(labels.ravel())
+        big = sizes >= 12
+        big[0] = False
+        border = big[labels]
+
+    fish = ndimage.binary_dilation(border, iterations=2)
+    fish = ndimage.binary_fill_holes(fish)
+    fish = ndimage.binary_erosion(fish, iterations=3)
+
+    labels, count = ndimage.label(fish)
+    if count:
+        sizes = np.bincount(labels.ravel())
+        big = sizes >= 200
+        big[0] = False
+        fish = big[labels]
+
+    result = alpha.copy()
+    result[~fish] = 0
+    return result
+
+
 def process_image(source: Path, destination: Path, padding: int) -> tuple[int, int]:
     image = Image.open(source).convert("RGBA")
-    alpha = np.asarray(image)[:, :, 3]
+    pixels = np.asarray(image).copy()
 
-    ys, xs = np.nonzero(alpha > 12)
+    pixels[:, :, 3] = clear_outside_border(pixels)
+    ys, xs = np.nonzero(pixels[:, :, 3] > 12)
     if not len(xs):
         raise ValueError("no foreground was found")
 
@@ -26,7 +71,7 @@ def process_image(source: Path, destination: Path, padding: int) -> tuple[int, i
     bottom = min(image.height, int(ys.max()) + padding + 1)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    image.crop((left, top, right, bottom)).save(destination)
+    Image.fromarray(pixels).crop((left, top, right, bottom)).save(destination)
     return right - left, bottom - top
 
 
