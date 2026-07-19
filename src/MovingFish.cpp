@@ -209,11 +209,13 @@ void MovingFish::updatePosition(uint32_t nowMs) {
   rotationRadians_ = headingRadians_ + PI;
 
   if (state_ == State::Seeking) {
-    const float dx = seekX_ - x_;
-    const float dy = seekY_ - y_;
+    const float noseOffset = image_->width * scale_ * 0.5f;
+    const float noseX = x_ + (cosf(headingRadians_) * noseOffset);
+    const float noseY = y_ + (sinf(headingRadians_) * noseOffset);
+    const float dx = seekX_ - noseX;
+    const float dy = seekY_ - noseY;
     if ((dx * dx) + (dy * dy) <=
         kSeekArrivalRadius * kSeekArrivalRadius) {
-      // Arrived: resume normal wandering in the current direction.
       state_ = State::Moving;
       targetHeadingRadians_ = headingRadians_;
     }
