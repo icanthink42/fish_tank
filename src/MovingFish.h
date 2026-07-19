@@ -25,9 +25,13 @@ class MovingFish {
 public:
   void begin(const Image &image, float scale, const FishMotionConfig &config,
              uint32_t nowMs);
+  void beginOffscreen(const Image &image, float scale,
+                      const FishMotionConfig &config, uint32_t nowMs);
   void update(uint32_t nowMs);
   void draw(ImageRenderer &renderer) const;
   Rect bounds() const;
+  bool hasEntered() const;
+  bool isFullyOffscreen() const;
   const Image *image() const;
   float x() const;
   float y() const;
@@ -43,7 +47,6 @@ private:
   void updatePauseRoll(uint32_t nowMs);
   void startPause(uint32_t nowMs);
   void updatePosition(uint32_t nowMs);
-  void wrapAroundBounds();
   bool isFullyVisible() const;
   void randomizeHeading();
   float randomX() const;
@@ -53,6 +56,7 @@ private:
   const Image *image_ = nullptr;
   FishMotionConfig config_;
   State state_ = State::Moving;
+  bool entered_ = false;
   float scale_ = 1.0f;
   float x_ = 0.0f;
   float y_ = 0.0f;

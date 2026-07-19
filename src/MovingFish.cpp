@@ -22,9 +22,53 @@ void MovingFish::begin(const Image &image, float scale,
   image_ = &image;
   scale_ = scale;
   config_ = config;
+  entered_ = true;
   x_ = randomX();
   y_ = randomY();
   randomizeHeading();
+  state_ = State::Moving;
+  stateStartMs_ = nowMs;
+  stateDurationMs_ = 0;
+  lastUpdateMs_ = nowMs;
+  lastPauseRollMs_ = nowMs;
+}
+
+void MovingFish::beginOffscreen(const Image &image, float scale,
+                                const FishMotionConfig &config,
+                                uint32_t nowMs) {
+  image_ = &image;
+  scale_ = scale;
+  config_ = config;
+  entered_ = false;
+
+  const float halfWidth = image.width * scale * 0.5f;
+  const float halfHeight = image.height * scale * 0.5f;
+  switch (random(4)) {
+  case 0:  // left
+    x_ = -halfWidth;
+    y_ = randomY();
+    break;
+  case 1:  // right
+    x_ = config_.displayWidth + halfWidth;
+    y_ = randomY();
+    break;
+  case 2:  // top
+    x_ = randomX();
+    y_ = -halfHeight;
+    break;
+  default:  // bottom
+    x_ = randomX();
+    y_ = config_.displayHeight + halfHeight;
+    break;
+  }
+
+  // Aim at a random point in the middle of the screen so the fish swims in.
+  const float targetX = config_.displayWidth * (random(25, 76) / 100.0f);
+  const float targetY = config_.displayHeight * (random(25, 76) / 100.0f);
+  headingRadians_ = atan2f(targetY - y_, targetX - x_);
+  targetHeadingRadians_ = headingRadians_;
+  rotationRadians_ = headingRadians_ + PI;
+
   state_ = State::Moving;
   stateStartMs_ = nowMs;
   stateDurationMs_ = 0;
@@ -48,7 +92,16 @@ void MovingFish::update(uint32_t nowMs) {
   }
 
   updatePosition(nowMs);
-  updatePauseRoll(nowMs);
+  if (!entered_ && isFullyVisible()) {
+    entered_ = true;
+  }
+  if (entered_) {
+    updatePauseRoll(nowMs);
+  } else {
+    // Hold course until fully on screen; keep the roll clock fresh so the
+    // fish doesn't get a burst of turns the moment it enters.
+    lastPauseRollMs_ = nowMs;
+  }
 }
 
 void MovingFish::draw(ImageRenderer &renderer) const {
@@ -128,29 +181,18 @@ void MovingFish::updatePosition(uint32_t nowMs) {
 
   x_ += cosf(headingRadians_) * config_.pixelsPerSecond * elapsedSeconds;
   y_ += sinf(headingRadians_) * config_.pixelsPerSecond * elapsedSeconds;
-  wrapAroundBounds();
   rotationRadians_ = headingRadians_ + PI;
 }
 
-void MovingFish::wrapAroundBounds() {
+bool MovingFish::hasEntered() const {
+  return entered_;
+}
+
+bool MovingFish::isFullyOffscreen() const {
   const float halfWidth = image_->width * scale_ * 0.5f;
   const float halfHeight = image_->height * scale_ * 0.5f;
-  const float leftExit = -halfWidth;
-  const float rightExit = config_.displayWidth + halfWidth;
-  const float topExit = -halfHeight;
-  const float bottomExit = config_.displayHeight + halfHeight;
-
-  if (x_ < leftExit) {
-    x_ = rightExit;
-  } else if (x_ > rightExit) {
-    x_ = leftExit;
-  }
-
-  if (y_ < topExit) {
-    y_ = bottomExit;
-  } else if (y_ > bottomExit) {
-    y_ = topExit;
-  }
+  return x_ < -halfWidth || x_ > config_.displayWidth + halfWidth ||
+         y_ < -halfHeight || y_ > config_.displayHeight + halfHeight;
 }
 
 bool MovingFish::isFullyVisible() const {

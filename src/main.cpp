@@ -23,7 +23,9 @@ constexpr int kLcdCs = 12;
 constexpr int kLcdWidth = 480;
 constexpr int kLcdHeight = 480;
 constexpr uint16_t kWaterBlue = RGB565(0, 170, 255);
-constexpr size_t kFishCount = 2;
+constexpr size_t kMinFish = 2;
+constexpr size_t kMaxFish = 10;
+constexpr uint8_t kSpawnChancePercentPerSecond = 5;
 constexpr uint32_t kFrameMs = 100;
 
 #define DECLARE_FISH_PNG(index)                                                \
@@ -71,10 +73,12 @@ Arduino_CO5300 *display =
 Image fishImages[kFishAssetCount];
 bool fishImageLoaded[kFishAssetCount] = {};
 ImageRenderer imageRenderer(*display, kLcdWidth, kLcdHeight);
-MovingFish fish[kFishCount];
+MovingFish fish[kMaxFish];
+bool fishActive[kMaxFish] = {};
 uint16_t *frameBuffer = nullptr;
 bool fishLoaded = false;
 uint32_t lastFrameMs = 0;
+uint32_t lastSpawnRollMs = 0;
 
 void clearFrameBuffer() {
   for (uint32_t i = 0; i < static_cast<uint32_t>(kLcdWidth) * kLcdHeight; ++i) {
@@ -136,13 +140,108 @@ void presentFrameBuffer() {
   display->draw16bitRGBBitmap(0, 0, frameBuffer, kLcdWidth, kLcdHeight);
 }
 
-void drawFrame(uint32_t nowMs) {
-  for (size_t i = 0; i < kFishCount; ++i) {
-    fish[i].update(nowMs);
+size_t activeFishCount() {
+  size_t count = 0;
+  for (size_t i = 0; i < kMaxFish; ++i) {
+    if (fishActive[i]) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+FishMotionConfig randomMotionConfig() {
+  FishMotionConfig motionConfig;
+  motionConfig.displayWidth = kLcdWidth;
+  motionConfig.displayHeight = kLcdHeight;
+  motionConfig.pixelsPerSecond = static_cast<float>(random(20, 61));
+  motionConfig.maxTurnRadiansPerSecond = random(35, 111) / 100.0f;
+  motionConfig.pauseChancePercentPerSecond =
+      static_cast<uint8_t>(random(2, 9));
+  motionConfig.minPauseMs = 5000;
+  motionConfig.maxPauseMs = 60000;
+  return motionConfig;
+}
+
+const Image *ensureFishAsset(size_t assetIndex) {
+  if (!fishImageLoaded[assetIndex]) {
+    EmbeddedPng png;
+    png.data = kFishAssets[assetIndex].start;
+    png.size = static_cast<size_t>(kFishAssets[assetIndex].end -
+                                   kFishAssets[assetIndex].start);
+    fishImageLoaded[assetIndex] = loadEmbeddedPng(png, fishImages[assetIndex]);
+    if (!fishImageLoaded[assetIndex]) {
+      Serial.printf("failed to load fish asset %u\n",
+                    static_cast<unsigned>(assetIndex + 1));
+      return nullptr;
+    }
+    Serial.printf("loaded fish asset %u: %dx%d\n",
+                  static_cast<unsigned>(assetIndex + 1),
+                  fishImages[assetIndex].width, fishImages[assetIndex].height);
+  }
+  return &fishImages[assetIndex];
+}
+
+bool spawnFish(uint32_t nowMs, bool onScreen) {
+  for (size_t slot = 0; slot < kMaxFish; ++slot) {
+    if (fishActive[slot]) {
+      continue;
+    }
+    const size_t assetIndex = random(kFishAssetCount);
+    const Image *image = ensureFishAsset(assetIndex);
+    if (!image) {
+      return false;
+    }
+    if (onScreen) {
+      fish[slot].begin(*image, 1.0f, randomMotionConfig(), nowMs);
+    } else {
+      fish[slot].beginOffscreen(*image, 1.0f, randomMotionConfig(), nowMs);
+    }
+    fishActive[slot] = true;
+    return true;
+  }
+  return false;
+}
+
+void updateFishPopulation(uint32_t nowMs) {
+  // Despawn fish that swam fully off screen.
+  for (size_t i = 0; i < kMaxFish; ++i) {
+    if (fishActive[i] && fish[i].hasEntered() && fish[i].isFullyOffscreen()) {
+      fishActive[i] = false;
+    }
   }
 
+  // Random chance for a new fish to swim in.
+  while (nowMs - lastSpawnRollMs >= 1000) {
+    lastSpawnRollMs += 1000;
+    if (activeFishCount() < kMaxFish &&
+        random(100) < kSpawnChancePercentPerSecond) {
+      spawnFish(nowMs, false);
+    }
+  }
+
+  // Keep the minimum population.
+  while (activeFishCount() < kMinFish) {
+    if (!spawnFish(nowMs, false)) {
+      break;
+    }
+  }
+}
+
+void drawFrame(uint32_t nowMs) {
+  for (size_t i = 0; i < kMaxFish; ++i) {
+    if (fishActive[i]) {
+      fish[i].update(nowMs);
+    }
+  }
+
+  updateFishPopulation(nowMs);
+
   clearFrameBuffer();
-  for (size_t i = 0; i < kFishCount; ++i) {
+  for (size_t i = 0; i < kMaxFish; ++i) {
+    if (!fishActive[i]) {
+      continue;
+    }
     const Image *image = fish[i].image();
     if (image) {
       drawImageToFrameBuffer(*image, fish[i].x(), fish[i].y(),
@@ -180,38 +279,11 @@ void setup() {
   }
 
   const uint32_t nowMs = millis();
-  fishLoaded = false;
-  for (size_t i = 0; i < kFishCount; ++i) {
-    FishMotionConfig motionConfig;
-    motionConfig.displayWidth = kLcdWidth;
-    motionConfig.displayHeight = kLcdHeight;
-    motionConfig.pixelsPerSecond = static_cast<float>(random(20, 61));
-    motionConfig.maxTurnRadiansPerSecond = random(35, 111) / 100.0f;
-    motionConfig.pauseChancePercentPerSecond =
-        static_cast<uint8_t>(random(2, 9));
-    motionConfig.minPauseMs = 5000;
-    motionConfig.maxPauseMs = 60000;
-    const size_t assetIndex = random(kFishAssetCount);
-    if (!fishImageLoaded[assetIndex]) {
-      EmbeddedPng png;
-      png.data = kFishAssets[assetIndex].start;
-      png.size = static_cast<size_t>(kFishAssets[assetIndex].end -
-                                     kFishAssets[assetIndex].start);
-      fishImageLoaded[assetIndex] =
-          loadEmbeddedPng(png, fishImages[assetIndex]);
-      if (!fishImageLoaded[assetIndex]) {
-        Serial.printf("failed to load fish asset %u\n",
-                      static_cast<unsigned>(assetIndex + 1));
-        continue;
-      }
-      Serial.printf("loaded fish asset %u: %dx%d\n",
-                    static_cast<unsigned>(assetIndex + 1),
-                    fishImages[assetIndex].width,
-                    fishImages[assetIndex].height);
-    }
-    fish[i].begin(fishImages[assetIndex], 1.0f, motionConfig, nowMs);
-    fishLoaded = true;
+  lastSpawnRollMs = nowMs;
+  for (size_t i = 0; i < kMinFish; ++i) {
+    spawnFish(nowMs, true);
   }
+  fishLoaded = activeFishCount() > 0;
   if (fishLoaded) {
     drawFrame(nowMs);
     lastFrameMs = nowMs;
