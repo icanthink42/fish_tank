@@ -41,24 +41,25 @@ void MovingFish::beginOffscreen(const Image &image, float scale,
   config_ = config;
   entered_ = false;
 
-  const float halfWidth = image.width * scale * 0.5f;
-  const float halfHeight = image.height * scale * 0.5f;
+  // Use the rotated bounding radius so no pixel is visible at spawn,
+  // regardless of the fish's orientation.
+  const float radius = boundingRadius();
   switch (random(4)) {
   case 0:  // left
-    x_ = -halfWidth;
+    x_ = -radius;
     y_ = randomY();
     break;
   case 1:  // right
-    x_ = config_.displayWidth + halfWidth;
+    x_ = config_.displayWidth + radius;
     y_ = randomY();
     break;
   case 2:  // top
     x_ = randomX();
-    y_ = -halfHeight;
+    y_ = -radius;
     break;
   default:  // bottom
     x_ = randomX();
-    y_ = config_.displayHeight + halfHeight;
+    y_ = config_.displayHeight + radius;
     break;
   }
 
@@ -189,10 +190,17 @@ bool MovingFish::hasEntered() const {
 }
 
 bool MovingFish::isFullyOffscreen() const {
+  // Compare against the rotated bounding radius so the fish only counts as
+  // gone once no pixel can be on screen in any orientation.
+  const float radius = boundingRadius();
+  return x_ < -radius || x_ > config_.displayWidth + radius ||
+         y_ < -radius || y_ > config_.displayHeight + radius;
+}
+
+float MovingFish::boundingRadius() const {
   const float halfWidth = image_->width * scale_ * 0.5f;
   const float halfHeight = image_->height * scale_ * 0.5f;
-  return x_ < -halfWidth || x_ > config_.displayWidth + halfWidth ||
-         y_ < -halfHeight || y_ > config_.displayHeight + halfHeight;
+  return sqrtf((halfWidth * halfWidth) + (halfHeight * halfHeight));
 }
 
 bool MovingFish::isFullyVisible() const {

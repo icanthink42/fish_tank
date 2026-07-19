@@ -48,6 +48,7 @@ private:
   void startPause(uint32_t nowMs);
   void updatePosition(uint32_t nowMs);
   bool isFullyVisible() const;
+  float boundingRadius() const;
   void randomizeHeading();
   float randomX() const;
   float randomY() const;
