@@ -423,7 +423,7 @@ void pollTouch(uint32_t nowMs) {
 
 void triggerShakeSpin(uint32_t nowMs) {
   for (size_t i = 0; i < kMaxFish; ++i) {
-    if (fishActive[i] && fish[i].hasEntered()) {
+    if (fishActive[i]) {
       fish[i].spinInPlace(nowMs, kShakeSpinMs);
     }
   }
