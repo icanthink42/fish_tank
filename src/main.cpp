@@ -346,6 +346,11 @@ void pollTouch(uint32_t nowMs) {
     const float tapX = static_cast<float>(kLcdWidth - 1 - rawY);
     const float tapY = static_cast<float>(rawX);
     spawnBubbles(tapX, tapY, nowMs);
+    for (size_t i = 0; i < kMaxFish; ++i) {
+      if (fishActive[i]) {
+        fish[i].swimTo(tapX, tapY, nowMs);
+      }
+    }
   }
   wasTouched = touched > 0;
 }

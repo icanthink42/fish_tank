@@ -5,6 +5,9 @@
 
 namespace {
 constexpr float kTwoPi = PI * 2.0f;
+constexpr float kSeekSpeedMultiplier = 1.5f;
+constexpr float kSeekTurnRadiansPerSecond = 3.0f;
+constexpr float kSeekArrivalRadius = 40.0f;
 
 float normalizeRadians(float angle) {
   while (angle > PI) {
@@ -77,6 +80,18 @@ void MovingFish::beginOffscreen(const Image &image, float scale,
   lastPauseRollMs_ = nowMs;
 }
 
+void MovingFish::swimTo(float targetX, float targetY, uint32_t nowMs) {
+  if (!image_) {
+    return;
+  }
+
+  seekX_ = targetX;
+  seekY_ = targetY;
+  state_ = State::Seeking;
+  lastUpdateMs_ = nowMs;
+  lastPauseRollMs_ = nowMs;
+}
+
 void MovingFish::update(uint32_t nowMs) {
   if (!image_) {
     return;
@@ -96,11 +111,11 @@ void MovingFish::update(uint32_t nowMs) {
   if (!entered_ && isFullyVisible()) {
     entered_ = true;
   }
-  if (entered_) {
+  if (state_ == State::Moving && entered_) {
     updatePauseRoll(nowMs);
   } else {
-    // Hold course until fully on screen; keep the roll clock fresh so the
-    // fish doesn't get a burst of turns the moment it enters.
+    // Hold course while entering or seeking; keep the roll clock fresh so
+    // the fish doesn't get a burst of turns when it resumes wandering.
     lastPauseRollMs_ = nowMs;
   }
 }
@@ -171,7 +186,16 @@ void MovingFish::startPause(uint32_t nowMs) {
 void MovingFish::updatePosition(uint32_t nowMs) {
   const float elapsedSeconds = (nowMs - lastUpdateMs_) / 1000.0f;
   lastUpdateMs_ = nowMs;
-  const float turnStep = config_.maxTurnRadiansPerSecond * elapsedSeconds;
+
+  float speed = config_.pixelsPerSecond;
+  float maxTurn = config_.maxTurnRadiansPerSecond;
+  if (state_ == State::Seeking) {
+    targetHeadingRadians_ = atan2f(seekY_ - y_, seekX_ - x_);
+    speed *= kSeekSpeedMultiplier;
+    maxTurn = kSeekTurnRadiansPerSecond;
+  }
+
+  const float turnStep = maxTurn * elapsedSeconds;
   const float headingDelta =
       normalizeRadians(targetHeadingRadians_ - headingRadians_);
   if (fabsf(headingDelta) <= turnStep) {
@@ -180,9 +204,20 @@ void MovingFish::updatePosition(uint32_t nowMs) {
     headingRadians_ += headingDelta > 0.0f ? turnStep : -turnStep;
   }
 
-  x_ += cosf(headingRadians_) * config_.pixelsPerSecond * elapsedSeconds;
-  y_ += sinf(headingRadians_) * config_.pixelsPerSecond * elapsedSeconds;
+  x_ += cosf(headingRadians_) * speed * elapsedSeconds;
+  y_ += sinf(headingRadians_) * speed * elapsedSeconds;
   rotationRadians_ = headingRadians_ + PI;
+
+  if (state_ == State::Seeking) {
+    const float dx = seekX_ - x_;
+    const float dy = seekY_ - y_;
+    if ((dx * dx) + (dy * dy) <=
+        kSeekArrivalRadius * kSeekArrivalRadius) {
+      // Arrived: resume normal wandering in the current direction.
+      state_ = State::Moving;
+      targetHeadingRadians_ = headingRadians_;
+    }
+  }
 }
 
 bool MovingFish::hasEntered() const {
