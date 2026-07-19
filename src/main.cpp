@@ -128,8 +128,42 @@ uint32_t lastFrameMs = 0;
 uint32_t lastSpawnRollMs = 0;
 
 void clearFrameBuffer() {
-  for (uint32_t i = 0; i < static_cast<uint32_t>(kLcdWidth) * kLcdHeight; ++i) {
-    frameBuffer[i] = kWaterBlue;
+  // Two pixels per 32-bit write; width * height is even.
+  constexpr uint32_t kPattern =
+      (static_cast<uint32_t>(kWaterBlue) << 16) | kWaterBlue;
+  uint32_t *destination = reinterpret_cast<uint32_t *>(frameBuffer);
+  const uint32_t count = (static_cast<uint32_t>(kLcdWidth) * kLcdHeight) / 2;
+  for (uint32_t i = 0; i < count; ++i) {
+    destination[i] = kPattern;
+  }
+}
+
+// Fast path: no rotation, no scaling. Straight row copy with alpha test.
+void drawImageAxisAligned(const Image &image, float x, float y) {
+  const int16_t left =
+      static_cast<int16_t>(floorf(x - (image.width * 0.5f)));
+  const int16_t top =
+      static_cast<int16_t>(floorf(y - (image.height * 0.5f)));
+  const int16_t srcStartX = left < 0 ? -left : 0;
+  const int16_t srcStartY = top < 0 ? -top : 0;
+  const int16_t srcEndX =
+      left + image.width > kLcdWidth ? kLcdWidth - left : image.width;
+  const int16_t srcEndY =
+      top + image.height > kLcdHeight ? kLcdHeight - top : image.height;
+
+  for (int16_t srcY = srcStartY; srcY < srcEndY; ++srcY) {
+    const uint32_t rowBase = static_cast<uint32_t>(srcY) * image.width;
+    const uint16_t *sourceRow = &image.pixels[rowBase + srcStartX];
+    const uint8_t *alphaRow =
+        image.alpha ? &image.alpha[rowBase + srcStartX] : nullptr;
+    uint16_t *destination =
+        &frameBuffer[((top + srcY) * kLcdWidth) + left + srcStartX];
+    const int16_t count = srcEndX - srcStartX;
+    for (int16_t i = 0; i < count; ++i) {
+      if (!alphaRow || alphaRow[i]) {
+        destination[i] = sourceRow[i];
+      }
+    }
   }
 }
 
@@ -139,13 +173,23 @@ void drawImageToFrameBuffer(const Image &image, float x, float y,
     return;
   }
 
+  if (fabsf(rotationRadians) < 0.0001f && fabsf(scale - 1.0f) < 0.0001f) {
+    drawImageAxisAligned(image, x, y);
+    return;
+  }
+
   const float halfW = image.width * scale * 0.5f;
   const float halfH = image.height * scale * 0.5f;
-  const float radius = sqrtf((halfW * halfW) + (halfH * halfH));
-  const int16_t left = static_cast<int16_t>(floorf(x - radius));
-  const int16_t top = static_cast<int16_t>(floorf(y - radius));
-  const int16_t right = static_cast<int16_t>(ceilf(x + radius));
-  const int16_t bottom = static_cast<int16_t>(ceilf(y + radius));
+  const float cosA = cosf(rotationRadians);
+  const float sinA = sinf(rotationRadians);
+
+  // Tight axis-aligned bounds of the rotated sprite (not the bounding circle).
+  const float extentX = (fabsf(cosA) * halfW) + (fabsf(sinA) * halfH);
+  const float extentY = (fabsf(sinA) * halfW) + (fabsf(cosA) * halfH);
+  const int16_t left = static_cast<int16_t>(floorf(x - extentX));
+  const int16_t top = static_cast<int16_t>(floorf(y - extentY));
+  const int16_t right = static_cast<int16_t>(ceilf(x + extentX));
+  const int16_t bottom = static_cast<int16_t>(ceilf(y + extentY));
   if (right < 0 || bottom < 0 || left >= kLcdWidth || top >= kLcdHeight) {
     return;
   }
@@ -154,32 +198,48 @@ void drawImageToFrameBuffer(const Image &image, float x, float y,
   const int16_t clippedTop = top < 0 ? 0 : top;
   const int16_t clippedRight = right >= kLcdWidth ? kLcdWidth - 1 : right;
   const int16_t clippedBottom = bottom >= kLcdHeight ? kLcdHeight - 1 : bottom;
-  const float cosA = cosf(rotationRadians);
-  const float sinA = sinf(rotationRadians);
   const float invScale = 1.0f / scale;
   const float imageCenterX = image.width * 0.5f;
   const float imageCenterY = image.height * 0.5f;
 
+  // 16.16 fixed-point incremental mapping: source coordinates change by a
+  // constant delta per screen pixel, so the inner loop is integer-only.
+  constexpr float kFixedOne = 65536.0f;
+  const int32_t stepSrcX = static_cast<int32_t>(cosA * invScale * kFixedOne);
+  const int32_t stepSrcY = static_cast<int32_t>(-sinA * invScale * kFixedOne);
+  const int32_t rowStepSrcX = static_cast<int32_t>(sinA * invScale * kFixedOne);
+  const int32_t rowStepSrcY = static_cast<int32_t>(cosA * invScale * kFixedOne);
+
+  const float startLocalX = (clippedLeft - x) * invScale;
+  const float startLocalY = (clippedTop - y) * invScale;
+  int32_t rowSrcX = static_cast<int32_t>(
+      ((startLocalX * cosA) + (startLocalY * sinA) + imageCenterX) * kFixedOne);
+  int32_t rowSrcY = static_cast<int32_t>(
+      ((-startLocalX * sinA) + (startLocalY * cosA) + imageCenterY) *
+      kFixedOne);
+
+  const int32_t maxSrcX = static_cast<int32_t>(image.width) << 16;
+  const int32_t maxSrcY = static_cast<int32_t>(image.height) << 16;
+
   for (int16_t screenY = clippedTop; screenY <= clippedBottom; ++screenY) {
     uint16_t *destination = &frameBuffer[(screenY * kLcdWidth) + clippedLeft];
+    int32_t srcX = rowSrcX;
+    int32_t srcY = rowSrcY;
     for (int16_t screenX = clippedLeft; screenX <= clippedRight; ++screenX) {
-      const float localX = (screenX - x) * invScale;
-      const float localY = (screenY - y) * invScale;
-      const int16_t sourceX =
-          static_cast<int16_t>(floorf((localX * cosA) + (localY * sinA) +
-                                      imageCenterX));
-      const int16_t sourceY =
-          static_cast<int16_t>(floorf((-localX * sinA) + (localY * cosA) +
-                                      imageCenterY));
-      if (sourceX >= 0 && sourceX < image.width && sourceY >= 0 &&
-          sourceY < image.height) {
-        const uint32_t sourceIndex = (sourceY * image.width) + sourceX;
+      if (srcX >= 0 && srcX < maxSrcX && srcY >= 0 && srcY < maxSrcY) {
+        const uint32_t sourceIndex =
+            static_cast<uint32_t>(srcY >> 16) * image.width +
+            static_cast<uint32_t>(srcX >> 16);
         if (!image.alpha || image.alpha[sourceIndex]) {
           *destination = image.pixels[sourceIndex];
         }
       }
+      srcX += stepSrcX;
+      srcY += stepSrcY;
       ++destination;
     }
+    rowSrcX += rowStepSrcX;
+    rowSrcY += rowStepSrcY;
   }
 }
 
