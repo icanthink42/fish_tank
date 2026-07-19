@@ -26,9 +26,40 @@ constexpr uint16_t kWaterBlue = RGB565(0, 170, 255);
 constexpr size_t kFishCount = 2;
 constexpr uint32_t kFrameMs = 100;
 
-extern const uint8_t fishSmallJpgStart[]
-    asm("_binary_assets_fish_small_jpg_start");
-extern const uint8_t fishSmallJpgEnd[] asm("_binary_assets_fish_small_jpg_end");
+#define DECLARE_FISH_PNG(index)                                                \
+  extern const uint8_t fish##index##PngStart[]                                 \
+      asm("_binary_assets_fish_" #index "_u_png_start");                       \
+  extern const uint8_t fish##index##PngEnd[]                                   \
+      asm("_binary_assets_fish_" #index "_u_png_end");
+
+DECLARE_FISH_PNG(1)
+DECLARE_FISH_PNG(2)
+DECLARE_FISH_PNG(3)
+DECLARE_FISH_PNG(4)
+DECLARE_FISH_PNG(5)
+DECLARE_FISH_PNG(6)
+DECLARE_FISH_PNG(7)
+DECLARE_FISH_PNG(8)
+DECLARE_FISH_PNG(9)
+DECLARE_FISH_PNG(10)
+DECLARE_FISH_PNG(11)
+DECLARE_FISH_PNG(12)
+
+#define FISH_PNG_ENTRY(index)                                                  \
+  { fish##index##PngStart, fish##index##PngEnd }
+
+struct FishAsset {
+  const uint8_t *start;
+  const uint8_t *end;
+};
+
+constexpr FishAsset kFishAssets[] = {
+    FISH_PNG_ENTRY(1),  FISH_PNG_ENTRY(2),  FISH_PNG_ENTRY(3),
+    FISH_PNG_ENTRY(4),  FISH_PNG_ENTRY(5),  FISH_PNG_ENTRY(6),
+    FISH_PNG_ENTRY(7),  FISH_PNG_ENTRY(8),  FISH_PNG_ENTRY(9),
+    FISH_PNG_ENTRY(10), FISH_PNG_ENTRY(11), FISH_PNG_ENTRY(12),
+};
+constexpr size_t kFishAssetCount = sizeof(kFishAssets) / sizeof(kFishAssets[0]);
 
 Arduino_DataBus *displayBus =
     new Arduino_ESP32QSPI(kLcdCs, kLcdSclk, kLcdSdio0, kLcdSdio1, kLcdSdio2,
@@ -37,9 +68,9 @@ Arduino_CO5300 *display =
     new Arduino_CO5300(displayBus, kLcdReset, 0, kLcdWidth, kLcdHeight, 0, 0, 0,
                        0);
 
-Image fishImage;
+Image fishImages[kFishAssetCount];
+bool fishImageLoaded[kFishAssetCount] = {};
 ImageRenderer imageRenderer(*display, kLcdWidth, kLcdHeight);
-EmbeddedJpeg fishJpeg;
 MovingFish fish[kFishCount];
 uint16_t *frameBuffer = nullptr;
 bool fishLoaded = false;
@@ -49,13 +80,6 @@ void clearFrameBuffer() {
   for (uint32_t i = 0; i < static_cast<uint32_t>(kLcdWidth) * kLcdHeight; ++i) {
     frameBuffer[i] = kWaterBlue;
   }
-}
-
-bool isTransparentFishPixel(uint16_t color) {
-  const uint8_t red = (color >> 11) & 0x1F;
-  const uint8_t green = (color >> 5) & 0x3F;
-  const uint8_t blue = color & 0x1F;
-  return red > 27 && green > 55 && blue > 27;
 }
 
 void drawImageToFrameBuffer(const Image &image, float x, float y,
@@ -98,9 +122,9 @@ void drawImageToFrameBuffer(const Image &image, float x, float y,
                                       imageCenterY));
       if (sourceX >= 0 && sourceX < image.width && sourceY >= 0 &&
           sourceY < image.height) {
-        const uint16_t color = image.pixels[(sourceY * image.width) + sourceX];
-        if (!isTransparentFishPixel(color)) {
-          *destination = color;
+        const uint32_t sourceIndex = (sourceY * image.width) + sourceX;
+        if (!image.alpha || image.alpha[sourceIndex]) {
+          *destination = image.pixels[sourceIndex];
         }
       }
       ++destination;
@@ -155,29 +179,42 @@ void setup() {
     return;
   }
 
-  fishJpeg.data = fishSmallJpgStart;
-  fishJpeg.size = static_cast<size_t>(fishSmallJpgEnd - fishSmallJpgStart);
-  fishJpeg.decodeScale = JpegDecodeScale::Full;
-  Serial.printf("embedded fish JPEG bytes: %u\n",
-                static_cast<unsigned>(fishJpeg.size));
-  fishLoaded = loadEmbeddedJpeg(fishJpeg, fishImage);
-  if (fishLoaded) {
+  const uint32_t nowMs = millis();
+  fishLoaded = false;
+  for (size_t i = 0; i < kFishCount; ++i) {
     FishMotionConfig motionConfig;
     motionConfig.displayWidth = kLcdWidth;
     motionConfig.displayHeight = kLcdHeight;
-    motionConfig.pixelsPerSecond = 35.0f;
-    motionConfig.maxTurnRadiansPerSecond = 0.65f;
-    motionConfig.pauseChancePercentPerSecond = 5;
+    motionConfig.pixelsPerSecond = static_cast<float>(random(20, 61));
+    motionConfig.maxTurnRadiansPerSecond = random(35, 111) / 100.0f;
+    motionConfig.pauseChancePercentPerSecond =
+        static_cast<uint8_t>(random(2, 9));
     motionConfig.minPauseMs = 5000;
     motionConfig.maxPauseMs = 60000;
-    const uint32_t nowMs = millis();
-    for (size_t i = 0; i < kFishCount; ++i) {
-      fish[i].begin(fishImage, 1.0f, motionConfig, nowMs);
+    const size_t assetIndex = random(kFishAssetCount);
+    if (!fishImageLoaded[assetIndex]) {
+      EmbeddedPng png;
+      png.data = kFishAssets[assetIndex].start;
+      png.size = static_cast<size_t>(kFishAssets[assetIndex].end -
+                                     kFishAssets[assetIndex].start);
+      fishImageLoaded[assetIndex] =
+          loadEmbeddedPng(png, fishImages[assetIndex]);
+      if (!fishImageLoaded[assetIndex]) {
+        Serial.printf("failed to load fish asset %u\n",
+                      static_cast<unsigned>(assetIndex + 1));
+        continue;
+      }
+      Serial.printf("loaded fish asset %u: %dx%d\n",
+                    static_cast<unsigned>(assetIndex + 1),
+                    fishImages[assetIndex].width,
+                    fishImages[assetIndex].height);
     }
+    fish[i].begin(fishImages[assetIndex], 1.0f, motionConfig, nowMs);
+    fishLoaded = true;
+  }
+  if (fishLoaded) {
     drawFrame(nowMs);
     lastFrameMs = nowMs;
-    Serial.printf("rendered fish image: %dx%d\n", fishImage.width,
-                  fishImage.height);
   }
 }
 

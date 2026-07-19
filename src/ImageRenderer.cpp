@@ -1,52 +1,37 @@
 #include "ImageRenderer.h"
 
 #include <Arduino.h>
-#include <JPEGDEC.h>
+#include <PNGdec.h>
 #include <esp_heap_caps.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 namespace {
-JPEGDEC jpegDecoder;
+PNG pngDecoder;
 
-int16_t minInt16(int16_t left, int16_t right) {
-  return left < right ? left : right;
-}
-
-int cacheJpegBlock(JPEGDRAW *draw) {
+int cachePngLine(PNGDRAW *draw) {
   Image *image = static_cast<Image *>(draw->pUser);
-  if (!image || !image->pixels) {
+  if (!image || !image->pixels || !image->alpha || draw->y < 0 ||
+      draw->y >= image->height) {
     return 0;
   }
 
-  const int16_t copyWidth =
-      minInt16(draw->iWidthUsed, image->width - draw->x);
-  const int16_t copyHeight = minInt16(draw->iHeight, image->height - draw->y);
-  if (copyWidth <= 0 || copyHeight <= 0 || draw->x < 0 || draw->y < 0) {
-    return 1;
+  const uint8_t *source = draw->pPixels;
+  const int width = draw->iWidth < image->width ? draw->iWidth : image->width;
+  uint16_t *pixelRow = &image->pixels[draw->y * image->width];
+  uint8_t *alphaRow = &image->alpha[draw->y * image->width];
+  for (int x = 0; x < width; ++x) {
+    const uint8_t red = source[0];
+    const uint8_t green = source[1];
+    const uint8_t blue = source[2];
+    const uint8_t alpha = source[3];
+    pixelRow[x] = static_cast<uint16_t>(((red & 0xF8) << 8) |
+                                        ((green & 0xFC) << 3) | (blue >> 3));
+    alphaRow[x] = alpha >= 128 ? 1 : 0;
+    source += 4;
   }
-
-  for (int16_t row = 0; row < copyHeight; ++row) {
-    memcpy(&image->pixels[((draw->y + row) * image->width) + draw->x],
-           &draw->pPixels[row * draw->iWidth], copyWidth * sizeof(uint16_t));
-  }
-
   return 1;
-}
-
-int jpegDecodeOptions(JpegDecodeScale scale) {
-  switch (scale) {
-  case JpegDecodeScale::Half:
-    return JPEG_SCALE_HALF;
-  case JpegDecodeScale::Quarter:
-    return JPEG_SCALE_QUARTER;
-  case JpegDecodeScale::Eighth:
-    return JPEG_SCALE_EIGHTH;
-  case JpegDecodeScale::Full:
-  default:
-    return 0;
-  }
 }
 }
 
@@ -127,24 +112,25 @@ int16_t ImageRenderer::clampToDisplayY(float value) const {
   return static_cast<int16_t>(value);
 }
 
-bool loadEmbeddedJpeg(const EmbeddedJpeg &jpeg, Image &image) {
-  if (!jpeg.data || jpeg.size == 0) {
+bool loadEmbeddedPng(const EmbeddedPng &png, Image &image) {
+  if (!png.data || png.size == 0) {
     return false;
   }
 
-  jpegDecoder.close();
-  if (!jpegDecoder.openFLASH(jpeg.data, jpeg.size, cacheJpegBlock)) {
-    Serial.printf("JPEG open failed: %d\n", jpegDecoder.getLastError());
+  if (pngDecoder.openFLASH(const_cast<uint8_t *>(png.data),
+                           static_cast<int>(png.size),
+                           cachePngLine) != PNG_SUCCESS) {
+    Serial.printf("PNG open failed: %d\n", pngDecoder.getLastError());
     return false;
   }
 
-  const int decodeScale = static_cast<int>(jpeg.decodeScale);
-  image.width = (jpegDecoder.getWidth() + decodeScale - 1) / decodeScale;
-  image.height = (jpegDecoder.getHeight() + decodeScale - 1) / decodeScale;
-  const size_t pixelBytes = image.width * image.height * sizeof(uint16_t);
-  Serial.printf("JPEG source: %dx%d, decoded: %dx%d, bytes: %u\n",
-                jpegDecoder.getWidth(), jpegDecoder.getHeight(), image.width,
-                image.height, static_cast<unsigned>(pixelBytes));
+  image.width = static_cast<int16_t>(pngDecoder.getWidth());
+  image.height = static_cast<int16_t>(pngDecoder.getHeight());
+  const size_t pixelCount =
+      static_cast<size_t>(image.width) * static_cast<size_t>(image.height);
+  const size_t pixelBytes = pixelCount * sizeof(uint16_t);
+  Serial.printf("PNG source: %dx%d, bytes: %u\n", image.width, image.height,
+                static_cast<unsigned>(pixelBytes));
 
   image.pixels =
       static_cast<uint16_t *>(heap_caps_malloc(pixelBytes, MALLOC_CAP_SPIRAM |
@@ -152,22 +138,31 @@ bool loadEmbeddedJpeg(const EmbeddedJpeg &jpeg, Image &image) {
   if (!image.pixels) {
     image.pixels = static_cast<uint16_t *>(malloc(pixelBytes));
   }
-  if (!image.pixels) {
+  image.alpha =
+      static_cast<uint8_t *>(heap_caps_malloc(pixelCount, MALLOC_CAP_SPIRAM |
+                                                              MALLOC_CAP_8BIT));
+  if (!image.alpha) {
+    image.alpha = static_cast<uint8_t *>(malloc(pixelCount));
+  }
+  if (!image.pixels || !image.alpha) {
     Serial.printf("Failed to allocate %u bytes for image\n",
-                  static_cast<unsigned>(pixelBytes));
-    jpegDecoder.close();
-    return false;
-  }
-
-  jpegDecoder.setUserPointer(&image);
-  if (!jpegDecoder.decode(0, 0, jpegDecodeOptions(jpeg.decodeScale))) {
-    Serial.printf("JPEG decode failed: %d\n", jpegDecoder.getLastError());
+                  static_cast<unsigned>(pixelBytes + pixelCount));
     free(image.pixels);
+    free(image.alpha);
     image = {};
-    jpegDecoder.close();
+    pngDecoder.close();
     return false;
   }
 
-  jpegDecoder.close();
+  if (pngDecoder.decode(&image, 0) != PNG_SUCCESS) {
+    Serial.printf("PNG decode failed: %d\n", pngDecoder.getLastError());
+    free(image.pixels);
+    free(image.alpha);
+    image = {};
+    pngDecoder.close();
+    return false;
+  }
+
+  pngDecoder.close();
   return true;
 }
