@@ -28,7 +28,7 @@ constexpr int kTouchInt = 11;
 constexpr int kTouchReset = 40;
 
 constexpr uint16_t kWaterBlue = RGB565(0, 170, 255);
-constexpr size_t kMinFish = 2;
+constexpr size_t kMinFish = 1;
 constexpr size_t kMaxFish = 10;
 constexpr uint8_t kSpawnChancePercentPerSecond = 5;
 constexpr uint32_t kFrameMs = 100;
