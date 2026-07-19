@@ -87,6 +87,10 @@ void MovingFish::swimTo(float targetX, float targetY, uint32_t nowMs) {
     return;
   }
 
+  if (state_ == State::Seeking && random(100) >= 25) {
+    return;
+  }
+
   seekX_ = targetX;
   seekY_ = targetY;
   state_ = State::Seeking;
