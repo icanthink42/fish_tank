@@ -22,12 +22,20 @@ def clear_outside_border(pixels: np.ndarray) -> np.ndarray:
     saturation = chroma / np.maximum(maximum, 1e-6)
     visible = alpha > 12
 
-    ring = visible & ~ndimage.binary_erosion(visible, iterations=6)
-    if not ring.any():
-        ring = visible
-    sat_cutoff = max(0.25, float(np.quantile(saturation[ring], 0.9)) + 0.15)
-    dark_cutoff = float(np.clip(np.median(maximum[ring]) - 0.3, 0.25, 0.6))
-    weak_cutoff = max(0.09, float(np.quantile(chroma[ring], 0.9)) + 0.04)
+    small = visible.sum() < 20000
+    if small:
+        sat_cutoff, dark_cutoff, weak_cutoff = 0.25, 0.35, 0.09
+        border_min, fish_min = 4, 30
+        dilate, erode = 1, 2
+    else:
+        ring = visible & ~ndimage.binary_erosion(visible, iterations=6)
+        if not ring.any():
+            ring = visible
+        sat_cutoff = max(0.25, float(np.quantile(saturation[ring], 0.9)) + 0.15)
+        dark_cutoff = float(np.clip(np.median(maximum[ring]) - 0.3, 0.25, 0.6))
+        weak_cutoff = max(0.09, float(np.quantile(chroma[ring], 0.9)) + 0.04)
+        border_min, fish_min = 12, 200
+        dilate, erode = 2, 3
 
     strong = ((saturation > sat_cutoff) | (maximum < dark_cutoff)) & visible
     weak = (chroma > weak_cutoff) & visible
@@ -36,18 +44,18 @@ def clear_outside_border(pixels: np.ndarray) -> np.ndarray:
     labels, count = ndimage.label(border)
     if count:
         sizes = np.bincount(labels.ravel())
-        big = sizes >= 12
+        big = sizes >= border_min
         big[0] = False
         border = big[labels]
 
-    fish = ndimage.binary_dilation(border, iterations=2)
+    fish = ndimage.binary_dilation(border, iterations=dilate)
     fish = ndimage.binary_fill_holes(fish)
-    fish = ndimage.binary_erosion(fish, iterations=3)
+    fish = ndimage.binary_erosion(fish, iterations=erode)
 
     labels, count = ndimage.label(fish)
     if count:
         sizes = np.bincount(labels.ravel())
-        big = sizes >= 200
+        big = sizes >= fish_min
         big[0] = False
         fish = big[labels]
 
