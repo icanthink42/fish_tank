@@ -38,6 +38,8 @@ constexpr uint32_t kImuPollMs = 25;
 constexpr uint32_t kPowerButtonPollMs = 100;
 constexpr uint32_t kShakeSpinMs = 900;
 constexpr float kShakeJerkThresholdG = 0.65f;
+constexpr float kBubbleMinGravityProjectionG = 0.12f;
+constexpr float kBubbleUpSmoothing = 0.2f;
 
 constexpr uint8_t kAxp2101Address = 0x34;
 constexpr uint8_t kAxp2101ChipIdRegister = 0x03;
@@ -120,7 +122,7 @@ Arduino_CO5300 *display =
 struct Bubble {
   bool active = false;
   const Image *image = nullptr;
-  float baseX = 0.0f;
+  float x = 0.0f;
   float y = 0.0f;
   float riseSpeed = 0.0f;
   float wobbleAmp = 0.0f;
@@ -145,6 +147,9 @@ uint16_t *frameBuffer = nullptr;
 bool fishLoaded = false;
 uint32_t lastFrameMs = 0;
 uint32_t lastSpawnRollMs = 0;
+float bubbleUpX = 0.0f;
+float bubbleUpY = -1.0f;
+bool bubbleUpReady = false;
 
 void clearFrameBuffer() {
   // Two pixels per 32-bit write; width * height is even.
@@ -318,6 +323,39 @@ const Image *ensureBubbleAsset(size_t assetIndex) {
                      bubbleImageLoaded[assetIndex], "bubble", assetIndex);
 }
 
+void updateBubbleUpFromAccel(float accelX, float accelY) {
+  const float gravityScreenX = -accelX;
+  const float gravityScreenY = accelY;
+  const float gravityMagnitude =
+      sqrtf((gravityScreenX * gravityScreenX) +
+            (gravityScreenY * gravityScreenY));
+  if (gravityMagnitude < kBubbleMinGravityProjectionG) {
+    return;
+  }
+
+  const float targetUpX = -gravityScreenX / gravityMagnitude;
+  const float targetUpY = -gravityScreenY / gravityMagnitude;
+  if (!bubbleUpReady) {
+    bubbleUpX = targetUpX;
+    bubbleUpY = targetUpY;
+    bubbleUpReady = true;
+    return;
+  }
+
+  bubbleUpX =
+      (bubbleUpX * (1.0f - kBubbleUpSmoothing)) +
+      (targetUpX * kBubbleUpSmoothing);
+  bubbleUpY =
+      (bubbleUpY * (1.0f - kBubbleUpSmoothing)) +
+      (targetUpY * kBubbleUpSmoothing);
+  const float smoothedMagnitude =
+      sqrtf((bubbleUpX * bubbleUpX) + (bubbleUpY * bubbleUpY));
+  if (smoothedMagnitude > 0.0001f) {
+    bubbleUpX /= smoothedMagnitude;
+    bubbleUpY /= smoothedMagnitude;
+  }
+}
+
 bool spawnFish(uint32_t nowMs, bool onScreen) {
   for (size_t slot = 0; slot < kMaxFish; ++slot) {
     if (fishActive[slot]) {
@@ -377,7 +415,7 @@ void spawnBubbles(float tapX, float tapY, uint32_t nowMs) {
     }
     bubbles[i].active = true;
     bubbles[i].image = image;
-    bubbles[i].baseX = tapX + random(-35, 36);
+    bubbles[i].x = tapX + random(-35, 36);
     bubbles[i].y = tapY + random(-35, 36);
     bubbles[i].riseSpeed = static_cast<float>(random(35, 76));
     bubbles[i].wobbleAmp = static_cast<float>(random(2, 9));
@@ -395,15 +433,21 @@ void updateAndDrawBubbles(uint32_t nowMs) {
     }
     const float elapsedSeconds = (nowMs - bubble.lastUpdateMs) / 1000.0f;
     bubble.lastUpdateMs = nowMs;
-    bubble.y -= bubble.riseSpeed * elapsedSeconds;
-    if (bubble.y < -bubble.image->height) {
+    bubble.x += bubbleUpX * bubble.riseSpeed * elapsedSeconds;
+    bubble.y += bubbleUpY * bubble.riseSpeed * elapsedSeconds;
+    if (bubble.x < -bubble.image->width ||
+        bubble.x > kLcdWidth + bubble.image->width ||
+        bubble.y < -bubble.image->height ||
+        bubble.y > kLcdHeight + bubble.image->height) {
       bubble.active = false;
       continue;
     }
-    const float x = bubble.baseX +
-                    (bubble.wobbleAmp *
-                     sinf((nowMs / 1000.0f * 2.5f) + bubble.wobblePhase));
-    drawImageToFrameBuffer(*bubble.image, x, bubble.y, 0.0f, 1.0f);
+    const float wobble =
+        bubble.wobbleAmp *
+        sinf((nowMs / 1000.0f * 2.5f) + bubble.wobblePhase);
+    const float drawX = bubble.x + (-bubbleUpY * wobble);
+    const float drawY = bubble.y + (bubbleUpX * wobble);
+    drawImageToFrameBuffer(*bubble.image, drawX, drawY, 0.0f, 1.0f);
   }
 }
 
@@ -538,6 +582,7 @@ void pollShake(uint32_t nowMs) {
   if (!imu.getAccelerometer(accelX, accelY, accelZ)) {
     return;
   }
+  updateBubbleUpFromAccel(accelX, accelY);
 
   if (havePreviousAccel) {
     const float deltaX = accelX - previousAccelX;
