@@ -27,6 +27,7 @@ public:
              uint32_t nowMs);
   void beginOffscreen(const Image &image, float scale,
                       const FishMotionConfig &config, uint32_t nowMs);
+  void spinInPlace(uint32_t nowMs, uint32_t durationMs);
   void swimTo(float targetX, float targetY, uint32_t nowMs);
   void update(uint32_t nowMs);
   void draw(ImageRenderer &renderer) const;
@@ -44,6 +45,7 @@ private:
     Moving,
     Paused,
     Seeking,
+    Spinning,
   };
 
   void updatePauseRoll(uint32_t nowMs);
@@ -66,6 +68,7 @@ private:
   float rotationRadians_ = 0.0f;
   float headingRadians_ = 0.0f;
   float targetHeadingRadians_ = 0.0f;
+  float spinRadiansPerSecond_ = 0.0f;
   float seekX_ = 0.0f;
   float seekY_ = 0.0f;
   uint32_t stateStartMs_ = 0;

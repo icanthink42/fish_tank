@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <math.h>
+#include <SensorQMI8658.hpp>
 #include <string.h>
 #include <touch/TouchDrvCST92xx.h>
 #include <Wire.h>
@@ -33,6 +34,9 @@ constexpr uint8_t kSpawnChancePercentPerSecond = 5;
 constexpr uint32_t kFrameMs = 100;
 constexpr size_t kMaxBubbles = 24;
 constexpr uint32_t kTouchPollMs = 30;
+constexpr uint32_t kImuPollMs = 25;
+constexpr uint32_t kShakeSpinMs = 900;
+constexpr float kShakeJerkThresholdG = 0.65f;
 
 #define DECLARE_FISH_PNG(index)                                                \
   extern const uint8_t fish##index##PngStart[]                                 \
@@ -121,7 +125,9 @@ MovingFish fish[kMaxFish];
 bool fishActive[kMaxFish] = {};
 Bubble bubbles[kMaxBubbles];
 TouchDrvCST92xx touch;
+SensorQMI8658 imu;
 bool touchReady = false;
+bool imuReady = false;
 uint16_t *frameBuffer = nullptr;
 bool fishLoaded = false;
 uint32_t lastFrameMs = 0;
@@ -415,6 +421,51 @@ void pollTouch(uint32_t nowMs) {
   wasTouched = touched > 0;
 }
 
+void triggerShakeSpin(uint32_t nowMs) {
+  for (size_t i = 0; i < kMaxFish; ++i) {
+    if (fishActive[i] && fish[i].hasEntered()) {
+      fish[i].spinInPlace(nowMs, kShakeSpinMs);
+    }
+  }
+}
+
+void pollShake(uint32_t nowMs) {
+  static bool havePreviousAccel = false;
+  static float previousAccelX = 0.0f;
+  static float previousAccelY = 0.0f;
+  static float previousAccelZ = 0.0f;
+  static uint32_t lastPollMs = 0;
+
+  if (!imuReady || nowMs - lastPollMs < kImuPollMs) {
+    return;
+  }
+  lastPollMs = nowMs;
+
+  float accelX = 0.0f;
+  float accelY = 0.0f;
+  float accelZ = 0.0f;
+  if (!imu.getAccelerometer(accelX, accelY, accelZ)) {
+    return;
+  }
+
+  if (havePreviousAccel) {
+    const float deltaX = accelX - previousAccelX;
+    const float deltaY = accelY - previousAccelY;
+    const float deltaZ = accelZ - previousAccelZ;
+    const float jerkSquared =
+        (deltaX * deltaX) + (deltaY * deltaY) + (deltaZ * deltaZ);
+    if (jerkSquared >= kShakeJerkThresholdG * kShakeJerkThresholdG) {
+      triggerShakeSpin(nowMs);
+    }
+  } else {
+    havePreviousAccel = true;
+  }
+
+  previousAccelX = accelX;
+  previousAccelY = accelY;
+  previousAccelZ = accelZ;
+}
+
 void drawFrame(uint32_t nowMs) {
   for (size_t i = 0; i < kMaxFish; ++i) {
     if (fishActive[i]) {
@@ -458,6 +509,18 @@ void setup() {
     Serial.printf("touch controller: %s\n", touch.getModelName());
   }
 
+  imuReady = imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, kI2cSda, kI2cScl) ||
+             imu.begin(Wire, QMI8658_H_SLAVE_ADDRESS, kI2cSda, kI2cScl);
+  if (!imuReady) {
+    Serial.println("QMI8658 IMU init failed");
+  } else {
+    imu.configAccelerometer(SensorQMI8658::ACC_RANGE_4G,
+                            SensorQMI8658::ACC_ODR_250Hz,
+                            SensorQMI8658::LPF_MODE_0);
+    imu.enableAccelerometer();
+    Serial.printf("QMI8658 IMU detected: 0x%02X\n", imu.getChipID());
+  }
+
   if (!display->begin()) {
     Serial.println("display->begin() failed");
     return;
@@ -493,6 +556,7 @@ void loop() {
 
   const uint32_t nowMs = millis();
   pollTouch(nowMs);
+  pollShake(nowMs);
   if (nowMs - lastFrameMs < kFrameMs) {
     delay(1);
     return;

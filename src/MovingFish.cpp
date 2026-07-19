@@ -8,6 +8,8 @@ constexpr float kTwoPi = PI * 2.0f;
 constexpr float kSeekSpeedMultiplier = 1.5f;
 constexpr float kSeekTurnRadiansPerSecond = 3.0f;
 constexpr float kSeekArrivalRadius = 40.0f;
+constexpr float kMinSpinRadiansPerSecond = 7.0f;
+constexpr float kMaxSpinRadiansPerSecond = 12.0f;
 
 float normalizeRadians(float angle) {
   while (angle > PI) {
@@ -92,8 +94,48 @@ void MovingFish::swimTo(float targetX, float targetY, uint32_t nowMs) {
   lastPauseRollMs_ = nowMs;
 }
 
+void MovingFish::spinInPlace(uint32_t nowMs, uint32_t durationMs) {
+  if (!image_) {
+    return;
+  }
+
+  if (state_ != State::Spinning) {
+    const float spinSpeed =
+        random(static_cast<long>(kMinSpinRadiansPerSecond * 100.0f),
+               static_cast<long>(kMaxSpinRadiansPerSecond * 100.0f) + 1) /
+        100.0f;
+    spinRadiansPerSecond_ = random(2) == 0 ? spinSpeed : -spinSpeed;
+    stateStartMs_ = nowMs;
+    stateDurationMs_ = durationMs;
+    lastUpdateMs_ = nowMs;
+  }
+
+  const uint32_t elapsedMs = nowMs - stateStartMs_;
+  if (elapsedMs + durationMs > stateDurationMs_) {
+    stateDurationMs_ = elapsedMs + durationMs;
+  }
+  state_ = State::Spinning;
+  lastPauseRollMs_ = nowMs;
+}
+
 void MovingFish::update(uint32_t nowMs) {
   if (!image_) {
+    return;
+  }
+
+  if (state_ == State::Spinning) {
+    const float elapsedSeconds = (nowMs - lastUpdateMs_) / 1000.0f;
+    lastUpdateMs_ = nowMs;
+    rotationRadians_ =
+        normalizeRadians(rotationRadians_ +
+                         (spinRadiansPerSecond_ * elapsedSeconds));
+    if (nowMs - stateStartMs_ >= stateDurationMs_) {
+      state_ = State::Moving;
+      targetHeadingRadians_ = headingRadians_;
+      rotationRadians_ = headingRadians_ + PI;
+      lastUpdateMs_ = nowMs;
+      lastPauseRollMs_ = nowMs;
+    }
     return;
   }
 
