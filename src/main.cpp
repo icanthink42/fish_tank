@@ -35,8 +35,20 @@ constexpr uint32_t kFrameMs = 100;
 constexpr size_t kMaxBubbles = 24;
 constexpr uint32_t kTouchPollMs = 30;
 constexpr uint32_t kImuPollMs = 25;
+constexpr uint32_t kPowerButtonPollMs = 100;
 constexpr uint32_t kShakeSpinMs = 900;
 constexpr float kShakeJerkThresholdG = 0.65f;
+
+constexpr uint8_t kAxp2101Address = 0x34;
+constexpr uint8_t kAxp2101ChipIdRegister = 0x03;
+constexpr uint8_t kAxp2101PowerOffRegister = 0x10;
+constexpr uint8_t kAxp2101IrqEnableRegister1 = 0x41;
+constexpr uint8_t kAxp2101IrqStatusRegister1 = 0x49;
+constexpr uint8_t kAxp2101ChipId = 0x4A;
+constexpr uint8_t kAxp2101PowerKeyLongPressIrq = 1 << 2;
+constexpr uint8_t kAxp2101PowerKeyShortPressIrq = 1 << 3;
+constexpr uint8_t kAxp2101PowerKeyIrqMask =
+    kAxp2101PowerKeyShortPressIrq | kAxp2101PowerKeyLongPressIrq;
 
 #define DECLARE_FISH_PNG(index)                                                \
   extern const uint8_t fish##index##PngStart[]                                 \
@@ -128,6 +140,7 @@ TouchDrvCST92xx touch;
 SensorQMI8658 imu;
 bool touchReady = false;
 bool imuReady = false;
+bool pmuReady = false;
 uint16_t *frameBuffer = nullptr;
 bool fishLoaded = false;
 uint32_t lastFrameMs = 0;
@@ -421,6 +434,84 @@ void pollTouch(uint32_t nowMs) {
   wasTouched = touched > 0;
 }
 
+bool readPmuRegister(uint8_t reg, uint8_t &value) {
+  Wire.beginTransmission(kAxp2101Address);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(kAxp2101Address, static_cast<uint8_t>(1)) != 1) {
+    return false;
+  }
+  value = Wire.read();
+  return true;
+}
+
+bool writePmuRegister(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(kAxp2101Address);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool updatePmuRegister(uint8_t reg, uint8_t clearMask, uint8_t setMask) {
+  uint8_t value = 0;
+  if (!readPmuRegister(reg, value)) {
+    return false;
+  }
+  value = (value & ~clearMask) | setMask;
+  return writePmuRegister(reg, value);
+}
+
+bool initPmuPowerButton() {
+  uint8_t chipId = 0;
+  if (!readPmuRegister(kAxp2101ChipIdRegister, chipId) ||
+      chipId != kAxp2101ChipId) {
+    return false;
+  }
+
+  if (!updatePmuRegister(kAxp2101IrqEnableRegister1, 0,
+                         kAxp2101PowerKeyIrqMask)) {
+    return false;
+  }
+  writePmuRegister(kAxp2101IrqStatusRegister1, kAxp2101PowerKeyIrqMask);
+  return true;
+}
+
+void enterPowerOff() {
+  Serial.println("entering PMU power-off");
+  Serial.flush();
+
+  if (imuReady) {
+    imu.disableAccelerometer();
+    imuReady = false;
+  }
+  display->setBrightness(0);
+  display->displayOff();
+
+  writePmuRegister(kAxp2101IrqStatusRegister1, kAxp2101PowerKeyIrqMask);
+  updatePmuRegister(kAxp2101PowerOffRegister, 0, 0x01);
+  delay(1000);
+}
+
+void pollPowerButton(uint32_t nowMs) {
+  static uint32_t lastPollMs = 0;
+  if (!pmuReady || nowMs - lastPollMs < kPowerButtonPollMs) {
+    return;
+  }
+  lastPollMs = nowMs;
+
+  uint8_t irqStatus = 0;
+  if (!readPmuRegister(kAxp2101IrqStatusRegister1, irqStatus)) {
+    return;
+  }
+  if (irqStatus & kAxp2101PowerKeyIrqMask) {
+    writePmuRegister(kAxp2101IrqStatusRegister1,
+                     irqStatus & kAxp2101PowerKeyIrqMask);
+    enterPowerOff();
+  }
+}
+
 void triggerShakeSpin(uint32_t nowMs) {
   for (size_t i = 0; i < kMaxFish; ++i) {
     if (fishActive[i]) {
@@ -501,6 +592,13 @@ void setup() {
   Serial.println();
   Serial.println("fish_tank firmware booted");
 
+  pmuReady = initPmuPowerButton();
+  if (!pmuReady) {
+    Serial.println("AXP2101 PMU init failed");
+  } else {
+    Serial.println("AXP2101 PMU power button ready");
+  }
+
   touch.setPins(kTouchReset, kTouchInt);
   touchReady = touch.begin(Wire, CST92XX_SLAVE_ADDRESS, kI2cSda, kI2cScl);
   if (!touchReady) {
@@ -550,11 +648,13 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t nowMs = millis();
+  pollPowerButton(nowMs);
+
   if (!fishLoaded) {
     return;
   }
 
-  const uint32_t nowMs = millis();
   pollTouch(nowMs);
   pollShake(nowMs);
   if (nowMs - lastFrameMs < kFrameMs) {
